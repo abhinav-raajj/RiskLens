@@ -96,4 +96,12 @@ def compute_cost_tradeoff(threshold_df, review_cost_per_txn=15, incident_cost_mu
     # context metrics
     df['avg_fraud_amount_caught'] = df['tp_amount'] / df['true_positives'].replace(0, 1)
 
+    # customer experience metrics — what a product person would ask about
+    # dataset covers ~2 days (172800 seconds), so daily rate = value / 2
+    daily_factor = 0.5
+    df['customers_blocked_per_day'] = (df['false_positives'] * daily_factor).astype(int)
+    df['analyst_hours_per_day'] = round(df['flagged_count'] * daily_factor * 10 / 60, 1)  # 10 min per review
+    df['cost_per_fraud_caught'] = round(df['review_cost'] / df['true_positives'].replace(0, 1), 2)
+    df['customer_friction_ratio'] = round(df['false_positives'] / df['true_positives'].replace(0, 1), 1)
+
     return df

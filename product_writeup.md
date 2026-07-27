@@ -27,12 +27,23 @@ I built a 5-signal rule-based scoring engine. No ML - every flag has a clear, ex
 | Velocity | 3+ transactions by same user in 5 minutes | 2 | Fraudsters rush to use stolen cards before they're blocked |
 | Round number pattern | Small round charge ($1, $5, $10) followed by large one within 2 min | 2 | Classic card-testing behavior seen in industry reports |
 
-Results:
-- **At threshold 1:** 86% recall - catches 424 out of 492 fraud cases using just these 5 rules
-- **At threshold 4 (optimal):** 9.9% precision, 13.4% recall, flags only 668 transactions out of 284K
-- **Medium+High risk buckets:** capture 59% of all fraud
+### Model Iteration
 
-These numbers are modest compared to ML models, and that's intentional. The point isn't to compete with XGBoost - it's to show that even simple, explainable rules capture meaningful signal. More importantly, the REAL question is where to set the threshold.
+To understand the tradeoff between explainability and accuracy, I compared three different approaches:
+- **Version 1: Hand-weighted rules** (5 signals, manual weights, best: 54% precision at score≥5)
+- **Version 2: Logistic regression** (same 5 signals, data-fitted weights)
+- **Version 3: LR + PCA features** (full dataset)
+
+**Key finding:** While Version 3 achieves 88% recall (p≥0.5) and Version 2 reaches 70%, they suffer from very low precision (6.7% and 4.3% respectively). Version 1 (hand-weighted rules) significantly outperforms LR at practical thresholds, delivering 54% precision at score≥5 and 24% precision at score≥4. Simple, explainable rules beat complex models when the cost of false positives is high.
+
+### Signal Analysis
+
+Not all signals are created equal, but they are all necessary:
+- **Signal frequency:** `category_rarity` flags 66% of fraud vs 0.1% of legit (862x lift)
+- `amount_deviation`: 48% fraud vs 21% legit (2.3x lift)
+- `time_anomaly`: 32% fraud vs 12% legit (2.6x lift)
+- **Feature importance from LR:** `category_rarity` accounts for 67% of the model weight, `amount_deviation` 16%, and `time_anomaly` 14%
+- **Signal overlap:** Each signal catches unique cases the others miss, proving why a multi-signal approach (5 signals, not 1) is essential for robust detection.
 
 ### The Tradeoff
 
@@ -46,6 +57,12 @@ The threshold simulator shows the business impact clearly:
 | 6 | 36 (0.01%) | 2 (0.4%) | 5.6% | +$490 (barely catches anything) |
 
 **Threshold 4 is the sweet spot.** It's the only threshold where the company makes more money from catching fraud ($33K saved) than it spends on reviewing false positives ($9K cost). For every fraud caught, about 9 legit customers are briefly inconvenienced.
+
+### Customer Segment Analysis
+
+Different customer segments have different optimal thresholds. Analyzing by segment reveals:
+- Micro-transaction users, standard users, and high-value users require different thresholds to optimize the business tradeoff.
+- **Product insight:** One-size-fits-all thresholds are suboptimal. A tailored approach significantly reduces friction for good customers while catching more fraud where it counts.
 
 ### Risk Drift
 
@@ -70,18 +87,15 @@ Bank server failures are the worst category - nearly 50 hours average resolution
 
 ## Recommendations
 
-### For Amex (Card Issuer)
+Based on the threshold-by-context framework:
 
-1. **Implement time-based step-up authentication** - require additional verification for transactions during hours 0-7, especially for amounts under $10 (card testing range) or over $500 (high-value risk). This targets the 4x elevated fraud window without adding friction during normal business hours.
+1. **Premium issuer (Amex): Threshold 3.** Minimize missed fraud. The business model can absorb the operational cost of higher false positives to protect high net-worth accounts and deliver white-glove security.
+2. **High-volume platform (Navi): Threshold 5.** Minimize friction. In a high-velocity, low-margin environment, blocking legitimate transactions destroys more value than the fraud itself.
+3. **Traditional bank (SBI/HDFC): Threshold 4.** A balanced approach that maximizes net financial impact while keeping operational costs manageable.
 
-2. **Use drift detection for premium customers** - instead of blocking a card when a single transaction looks suspicious, track whether the customer's risk profile is trending upward. Proactive outreach ("We noticed some unusual patterns - is everything okay?") preserves the premium experience that Amex cardholders expect.
+## Known Limitations
 
-3. **Set the default review threshold at 4** - this maximizes net benefit (+$24K), catching 13.4% of fraud while flagging just 0.23% of transactions. For premium/high-value cards, consider a lower threshold and absorb the higher false-positive cost as a service investment.
-
-### For Navi (UPI / Lending)
-
-1. **Prioritize bank_server_down resolution** - this category has the lowest resolution rate (73.4%) and highest dispute rate (6.9%). Building automated server health monitoring and instant refund processing for confirmed server failures could cut dispute volume by an estimated 30-40%.
-
-2. **Implement front-end VPA validation** - wrong VPA errors are user errors that create unnecessary failed transactions. Real-time VPA format validation and a "recent payees" list would prevent most of these before the user even submits.
-
-3. **Apply drift detection to lending portfolio** - the same trajectory tracking logic can monitor borrower risk profiles. Flag borrowers whose payment behavior is deteriorating (increasing late payments, smaller amounts, longer gaps) before they become NPAs. Early intervention is worth significantly more per case in lending than in fraud.
+- **Synthetic user IDs:** The user tracking is a framework demo; real user behavior is more complex.
+- **PCA features limit explainability:** Relying on PCA features (like V14) makes it harder to explain exactly *why* a transaction is flagged to a customer.
+- **UPI data is synthetic:** The UPI dataset was generated to demonstrate domain knowledge, not extracted from a real payment network.
+- **Category_rarity does most of the heavy lifting:** While overlap exists, a single signal drives a disproportionate amount of the detection capability.

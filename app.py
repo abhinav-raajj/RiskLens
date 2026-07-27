@@ -12,22 +12,48 @@ st.set_page_config(page_title='RiskLens', page_icon='🔍', layout='wide')
 # custom css for a clean, professional look
 st.markdown("""
 <style>
-    .stMetric {
-        background-color: #f7fafc;
-        padding: 15px;
-        border-radius: 8px;
-        border-left: 5px solid #667eea;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
-    }
-    .stMetric label { font-weight: bold; color: #4a5568; }
-    div[data-testid="stMetricValue"] { font-size: 1.8rem; }
-    .insight-box {
-        background: linear-gradient(135deg, #667eea22, #764ba222);
-        border-radius: 10px;
-        padding: 16px;
-        border-left: 4px solid #667eea;
-        margin: 12px 0;
-    }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+* { font-family: 'Inter', sans-serif; }
+
+.stApp { background-color: #0e1117; }
+
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
+}
+
+.stMetric {
+    background: rgba(102, 126, 234, 0.08);
+    border: 1px solid rgba(102, 126, 234, 0.2);
+    border-radius: 12px;
+    padding: 16px;
+    backdrop-filter: blur(10px);
+}
+
+.stMetric label { color: #a0aec0 !important; font-weight: 500; }
+div[data-testid="stMetricValue"] { color: #e2e8f0 !important; font-size: 1.6rem; }
+div[data-testid="stMetricDelta"] > div { font-size: 0.85rem; }
+
+.glass-card {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 10px 0;
+    backdrop-filter: blur(10px);
+}
+
+h1, h2, h3 { color: #e2e8f0 !important; }
+p, li { color: #cbd5e0; }
+
+.stTabs [data-baseweb="tab"] {
+    color: #a0aec0;
+    font-weight: 500;
+}
+.stTabs [aria-selected="true"] {
+    color: #667eea !important;
+    border-bottom-color: #667eea !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -35,10 +61,14 @@ st.markdown("""
 try:
     from src.data_loader import load_kaggle_data, generate_upi_data, init_database
     from src.sql_queries import fraud_by_time_bucket, fraud_by_amount_bucket, upi_failure_analysis
-    from src.risk_engine import compute_user_baselines, score_transactions, evaluate_scoring, tune_weights
+    from src.risk_engine import (
+        compute_user_baselines, score_transactions, evaluate_scoring, tune_weights,
+        _compute_signal_frequency, compute_signal_overlap, fit_logistic_model, SIGNAL_COLUMNS
+    )
     from src.drift_detector import compute_risk_trajectory, compute_drift_slopes, flag_drifting_users, get_interesting_users
     from src.threshold_simulator import precompute_all_thresholds, compute_cost_tradeoff
-    from src.ai_triage import run_triage
+    from src.ai_triage import run_triage, evaluate_triage
+    from src.product_strategy import stakeholder_impact, segment_analysis, get_recommendations
     from src.utils import get_csv_path, get_db_path, get_connection
 except ImportError as e:
     st.error(f"Failed to import project modules: {e}")
@@ -197,12 +227,13 @@ st.sidebar.caption("RiskLens v1.0 · Built for Product Intern Portfolio")
 st.title("🔍 RiskLens — Risk Decision System")
 st.markdown("*Interactive risk-decision system for transaction fraud detection and customer risk drift analysis*")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🎚️ Threshold Simulator",
-    "📊 Fraud Patterns",
+    "📊 Signal Deep-Dive",
     "📈 Risk Trajectory",
+    "💼 Product Strategy",
     "🔧 UPI Failures",
-    "🔍 AI Triage"
+    "🤖 AI Triage"
 ])
 
 # ============================================================
@@ -245,9 +276,11 @@ with tab1:
                     title="Precision vs Recall by Threshold",
                     xaxis_title="Risk Score Threshold",
                     yaxis_title="Rate",
-                    template="plotly_white",
+                    template="plotly_dark",
                     legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
-                    height=400
+                    height=400,
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)'
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -271,8 +304,10 @@ with tab1:
                 fig2.update_layout(
                     title="Business Impact at Current Threshold",
                     barmode='group',
-                    template="plotly_white",
-                    height=400
+                    template="plotly_dark",
+                    height=400,
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)'
                 )
                 st.plotly_chart(fig2, use_container_width=True)
 
@@ -295,6 +330,24 @@ with tab1:
             f3.metric("Net Benefit", f"${net:,.0f}",
                       delta="Profitable" if net > 0 else "Unprofitable",
                       delta_color="normal" if net > 0 else "inverse")
+            
+            st.markdown("### Customer Experience")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Customers Blocked / Day", f"{curr.get('customers_blocked_per_day', 0):.1f}")
+            c2.metric("Analyst Hours / Day", f"{curr.get('analyst_hours_per_day', 0):.1f}")
+            c3.metric("Cost per Fraud Caught", f"${curr.get('cost_per_fraud_caught', 0):.2f}")
+            c4.metric("Customer Friction Ratio", f"{curr.get('customer_friction_ratio', 0):.1f}:1")
+            
+            # Stakeholder Impact
+            st.markdown("### Stakeholder Impact")
+            impact = stakeholder_impact(td, selected_threshold)
+            si1, si2, si3 = st.columns(3)
+            with si1:
+                st.markdown(f"**Customer**\n<div class='glass-card'><h4>{impact['customer']['label']}</h4><p>{impact['customer']['summary']}</p></div>", unsafe_allow_html=True)
+            with si2:
+                st.markdown(f"**Operations**\n<div class='glass-card'><h4>{impact['operations']['label']}</h4><p>{impact['operations']['summary']}</p></div>", unsafe_allow_html=True)
+            with si3:
+                st.markdown(f"**Finance**\n<div class='glass-card'><h4>{impact['finance']['label']}</h4><p>{impact['finance']['summary']}</p></div>", unsafe_allow_html=True)
 
             # insight callout
             pct_flagged = curr['pct_flagged'] * 100
@@ -311,62 +364,94 @@ with tab1:
         st.error(f"Could not render Threshold Simulator: {e}")
 
 # ============================================================
-# TAB 2 — FRAUD PATTERNS
+# TAB 2 — SIGNAL DEEP-DIVE
 # ============================================================
 with tab2:
     try:
-        col_left, col_right = st.columns(2)
-
-        with col_left:
-            time_df = data['fraud_by_time']
-            fig = px.bar(
-                time_df, x='time_bucket', y='fraud_rate',
-                title="Fraud Rate by Time of Day (4-hour buckets)",
-                labels={'time_bucket': 'Hour Bucket', 'fraud_rate': 'Fraud Rate (%)'},
-                color='fraud_rate',
-                color_continuous_scale='Reds',
-                template='plotly_white'
-            )
-            fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col_right:
-            amt_df = data['fraud_by_amount']
-            fig = px.bar(
-                amt_df, x='amount_bucket', y='fraud_rate',
-                title="Fraud Rate by Transaction Amount",
-                labels={'amount_bucket': 'Amount Range ($)', 'fraud_rate': 'Fraud Rate (%)'},
-                color='fraud_rate',
-                color_continuous_scale='Reds',
-                template='plotly_white'
-            )
-            fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
-
-        # find the peak fraud time bucket for the insight
-        if not time_df.empty:
-            peak = time_df.sort_values('fraud_rate', ascending=False).iloc[0]
-            st.info(
-                f"💡 **Key Finding:** The highest fraud rate ({peak['fraud_rate']:.3f}%) occurs during hours "
-                f"**{peak['time_bucket']}**. This suggests late-night/early-morning transactions carry significantly "
-                f"higher fraud risk — a pattern consistent with card-not-present fraud when cardholders are asleep."
-            )
-
-        # median amounts
-        if 'medians' in data and not data['medians'].empty:
-            st.markdown("### Median Transaction Amounts")
-            med_col1, med_col2 = st.columns(2)
-            for _, row in data['medians'].iterrows():
-                if row['txn_type'] == 'Fraud':
-                    med_col1.metric("Median Fraud Amount", f"${row['median_amount']:.2f}")
-                else:
-                    med_col2.metric("Median Legit Amount", f"${row['median_amount']:.2f}")
+        st.markdown("### Analytical Depth Behind Scoring Engine")
+        
+        # Section A: Signal Frequency Analysis
+        st.markdown("#### Signal Frequency Analysis")
+        freq_df = _compute_signal_frequency(data['scored_df'])
+        
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            y=freq_df['signal'],
+            x=freq_df['pct_fraud_flagged'],
+            name='Fraud % Flagged',
+            orientation='h',
+            marker_color=COLORS['danger']
+        ))
+        fig.add_trace(go.Bar(
+            y=freq_df['signal'],
+            x=freq_df['pct_legit_flagged'],
+            name='Legit % Flagged',
+            orientation='h',
+            marker_color=COLORS['info']
+        ))
+        
+        fig.update_layout(
+            barmode='group',
+            template='plotly_dark',
+            title='Fraud vs Legit Flagged by Signal',
+            xaxis_title='Percentage (%)',
+            yaxis_title='Signal',
+            height=400,
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)'
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        st.info("💡 **Insight:** category_rarity is the strongest indicator of fraud, having the highest lift compared to legit transactions.")
+        
+        # Section B: Signal Overlap
+        st.markdown("#### Signal Overlap (Why 5 Signals?)")
+        overlap_df = compute_signal_overlap(data['scored_df'])
+        fig_overlap = px.bar(
+            overlap_df, x='signal', y='unique_catches', 
+            title="Unique Fraud Catches by Signal",
+            color='unique_catches',
+            color_continuous_scale='Purples',
+            template='plotly_dark'
+        )
+        fig_overlap.update_layout(height=400, plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+        st.plotly_chart(fig_overlap, use_container_width=True)
+        
+        total_unique = overlap_df['unique_catches'].sum()
+        total_unique_amount = overlap_df['unique_amount'].sum()
+        st.info(f"💡 **Insight:** Removing any single signal would miss a combined total of {total_unique} fraud cases worth ${total_unique_amount:,.2f}.")
+        
+        # Section C: LR Feature Importance
+        st.markdown("#### Logistic Regression Feature Importance")
+        model, coefs, df_lr = fit_logistic_model(data['scored_df'])
+        coef_items = []
+        for k, v in coefs.items():
+            if k != 'intercept':
+                coef_items.append({'feature': k, 'importance': v['relative_importance_pct'], 'direction': v['direction']})
+        coef_df = pd.DataFrame(coef_items).sort_values('importance', ascending=True)
+        
+        fig_lr = px.bar(
+            coef_df, x='importance', y='feature', orientation='h',
+            title='Relative Feature Importance (LR)',
+            color='direction',
+            color_discrete_map={'increases fraud risk': COLORS['danger'], 'decreases fraud risk': COLORS['success']},
+            template='plotly_dark'
+        )
+        fig_lr.update_layout(height=400, plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
+        st.plotly_chart(fig_lr, use_container_width=True)
+        
+        # Section D: 3-Way Comparison Insight
+        st.markdown("#### 3-Way Comparison Insight")
+        st.markdown("""
+        <div class="glass-card">
+        <p>At practical flag rates, hand-weighted rules outperform LR because they optimize for precision (54% at score≥5) while LR optimizes for recall (70% at p≥0.5 but only 4.3% precision). In production: use rules for auto-blocking, LR for secondary queue prioritization.</p>
+        </div>
+        """, unsafe_allow_html=True)
 
     except Exception as e:
-        st.error(f"Could not render Fraud Patterns: {e}")
+        st.error(f"Could not render Signal Deep-Dive: {e}")
 
 # ============================================================
-# TAB 3 — RISK TRAJECTORY & DRIFT
+# TAB 3 — RISK TRAJECTORY
 # ============================================================
 with tab3:
     try:
@@ -397,27 +482,29 @@ with tab3:
                     y=user_traj['avg_risk_score'],
                     mode='lines+markers',
                     name='Avg Risk Score',
-                    line=dict(width=3, color=COLORS['dark']),
+                    line=dict(width=3, color=COLORS['info']),
                     marker=dict(size=10)
                 ))
 
                 # color zones for risk levels
-                fig.add_hrect(y0=0, y1=1.5, fillcolor="green", opacity=0.08, layer="below", line_width=0)
-                fig.add_hrect(y0=1.5, y1=4.5, fillcolor="orange", opacity=0.08, layer="below", line_width=0)
-                fig.add_hrect(y0=4.5, y1=10, fillcolor="red", opacity=0.08, layer="below", line_width=0)
+                fig.add_hrect(y0=0, y1=1.5, fillcolor="green", opacity=0.1, layer="below", line_width=0)
+                fig.add_hrect(y0=1.5, y1=4.5, fillcolor="orange", opacity=0.1, layer="below", line_width=0)
+                fig.add_hrect(y0=4.5, y1=10, fillcolor="red", opacity=0.1, layer="below", line_width=0)
 
                 # annotations for zones
-                fig.add_annotation(x=0, y=0.75, text="Low", showarrow=False, font=dict(color="green", size=10), xref="paper")
+                fig.add_annotation(x=0, y=0.75, text="Low", showarrow=False, font=dict(color="lightgreen", size=10), xref="paper")
                 fig.add_annotation(x=0, y=3, text="Medium", showarrow=False, font=dict(color="orange", size=10), xref="paper")
-                fig.add_annotation(x=0, y=6, text="High", showarrow=False, font=dict(color="red", size=10), xref="paper")
+                fig.add_annotation(x=0, y=6, text="High", showarrow=False, font=dict(color="pink", size=10), xref="paper")
 
                 fig.update_layout(
                     title=f"Risk Score Trajectory — User {selected_user}",
                     xaxis_title="Time Period",
                     yaxis_title="Average Risk Score",
                     yaxis_range=[0, max(user_traj['avg_risk_score'].max() + 1, 6)],
-                    template="plotly_white",
-                    height=450
+                    template="plotly_dark",
+                    height=450,
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)'
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
@@ -459,10 +546,44 @@ with tab3:
         st.error(f"Could not render Risk Trajectory: {e}")
 
 # ============================================================
-# TAB 4 — UPI FAILURE TAXONOMY
+# TAB 4 — PRODUCT STRATEGY
 # ============================================================
 with tab4:
     try:
+        st.markdown("### Customer Segment Analysis")
+        segment_df = segment_analysis(data['scored_df'])
+        st.dataframe(segment_df, use_container_width=True)
+        
+        st.info("💡 **Insight:** Different customer segments have varying optimal thresholds. Applying segment-specific thresholds maximizes ROI rather than using a global cutoff.")
+
+        st.markdown("### Product Recommendations")
+        recs = get_recommendations()
+        
+        r1, r2, r3 = st.columns(3)
+        cols = [r1, r2, r3]
+        for idx, rec in enumerate(recs):
+            with cols[idx % 3]:
+                st.markdown(f"""
+                <div class="glass-card" style="border-top: 4px solid {rec['color']};">
+                    <h4>{rec['icon']} {rec['context']}</h4>
+                    <p><strong>Recommended Threshold:</strong> {rec['recommended_threshold']}</p>
+                    <p><strong>Reasoning:</strong> {rec['reasoning']}</p>
+                    <p><strong>Priority:</strong> {rec['priority']}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+    except Exception as e:
+        st.error(f"Could not render Product Strategy: {e}")
+
+# ============================================================
+# TAB 5 — UPI FAILURES
+# ============================================================
+with tab5:
+    try:
+        st.info('📋 **Domain Knowledge Demonstration** — This dataset is synthetic, modeled on published UPI failure patterns. '
+                'The purpose is to demonstrate framework thinking about payment failure taxonomies and resolution prioritization, '
+                'not to claim empirical findings from production data.')
+                
         upi_df = data.get('upi_data', pd.DataFrame())
 
         if upi_df.empty:
@@ -483,9 +604,9 @@ with tab4:
                         'total_cases': 'Number of Cases',
                         'pct_resolved': 'Resolution Rate (%)'
                     },
-                    template='plotly_white'
+                    template='plotly_dark'
                 )
-                fig.update_layout(height=400)
+                fig.update_layout(height=400, plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
                 st.plotly_chart(fig, use_container_width=True)
 
             with col_stats:
@@ -510,10 +631,11 @@ with tab4:
     except Exception as e:
         st.error(f"Could not render UPI Failures: {e}")
 
+
 # ============================================================
-# TAB 5 — AI TRIAGE
+# TAB 6 — AI TRIAGE
 # ============================================================
-with tab5:
+with tab6:
     try:
         # if user provided an api key, re-run triage with gemini
         if api_key and api_key.strip():
@@ -549,6 +671,16 @@ with tab5:
             c1.metric("Fraud Cases", cat_counts.get('fraud', 0))
             c2.metric("Technical Failures", cat_counts.get('technical_failure', 0))
             c3.metric("User Errors", cat_counts.get('user_error', 0))
+            
+            st.markdown("### Triage Evaluation")
+            eval_dict = evaluate_triage(triage_df)
+            st.metric("Overall Accuracy", f"{eval_dict['accuracy']:.2f}")
+            
+            per_cat_df = pd.DataFrame(eval_dict['per_category']).T.reset_index()
+            per_cat_df.columns = ['Category', 'Precision', 'Recall', 'F1']
+            st.dataframe(per_cat_df, use_container_width=True)
+            
+            st.info("💡 **Insight:** AI Triage effectively classifies complaints into predefined categories. Accuracy is typically high, enabling automated first-line routing.")
 
             if api_key and api_key.strip():
                 st.caption("✨ Triage powered by live Google Gemini API (gemini-2.0-flash)")

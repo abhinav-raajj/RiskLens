@@ -274,6 +274,52 @@ def _compute_signal_frequency(scored_df, features=None):
     return pd.DataFrame(rows)
 
 
+def compute_signal_overlap(scored_df):
+    """
+    Answers: 'why 5 signals instead of just category_rarity?'
+    For each signal, computes how many fraud cases it uniquely catches
+    that NO other signal would catch alone.
+    """
+    signals = SIGNAL_COLUMNS
+    fraud = scored_df[scored_df['Class'] == 1]
+    total_fraud = len(fraud)
+
+    results = []
+    for sig in signals:
+        # fraud cases where this signal fired
+        caught = fraud[fraud[sig] == 1]
+        total_caught = len(caught)
+
+        # of those, how many would be missed if we removed this signal?
+        # (i.e., no OTHER signal fired for these cases)
+        other_signals = [s for s in signals if s != sig]
+        only_this = caught[other_signals].sum(axis=1) == 0
+        unique_count = int(only_this.sum())
+        unique_amount = float(caught.loc[only_this, 'Amount'].sum()) if unique_count > 0 else 0.0
+
+        results.append({
+            'signal': sig,
+            'fraud_caught': total_caught,
+            'pct_of_fraud': round(total_caught / total_fraud * 100, 1) if total_fraud > 0 else 0,
+            'unique_catches': unique_count,
+            'unique_amount': round(unique_amount, 2),
+        })
+
+    # fraud not caught by ANY signal
+    any_signal = fraud[signals].sum(axis=1) > 0
+    uncaught = int((~any_signal).sum())
+    uncaught_amount = float(fraud.loc[~any_signal, 'Amount'].sum())
+    results.append({
+        'signal': '(not caught by any signal)',
+        'fraud_caught': 0,
+        'pct_of_fraud': 0,
+        'unique_catches': uncaught,
+        'unique_amount': round(uncaught_amount, 2),
+    })
+
+    return pd.DataFrame(results)
+
+
 def fit_logistic_model(scored_df, features=None):
     """
     Fit LR on interpretable signals — data-fitted weights, still explainable.

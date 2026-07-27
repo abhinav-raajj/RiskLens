@@ -167,6 +167,51 @@ Response: [your 2-sentence response]
     return pd.concat([complaints_df, res_df], axis=1)
 
 
+def evaluate_triage(triaged_df):
+    """
+    Measures triage accuracy against ground truth complaint types.
+    Maps complaint_type -> expected AI category and checks agreement.
+    """
+    # ground truth mapping: what category should each complaint type get?
+    expected_map = {
+        'card_fraud': 'fraud',
+        'upi_failure': 'technical_failure'  # most UPI failures are technical, not user error
+    }
+
+    df = triaged_df.copy()
+    df['expected'] = df['complaint_type'].map(expected_map)
+
+    # overall accuracy
+    correct = (df['ai_category'] == df['expected']).sum()
+    total = len(df)
+    accuracy = correct / total if total > 0 else 0
+
+    # per-category precision and recall
+    categories = sorted(df['ai_category'].unique())
+    per_cat = {}
+    for cat in categories:
+        predicted_cat = df['ai_category'] == cat
+        actual_cat = df['expected'] == cat
+        tp = (predicted_cat & actual_cat).sum()
+        fp = (predicted_cat & ~actual_cat).sum()
+        fn = (~predicted_cat & actual_cat).sum()
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0
+        rec = tp / (tp + fn) if (tp + fn) > 0 else 0
+        per_cat[cat] = {
+            'precision': round(prec, 2),
+            'recall': round(rec, 2),
+            'predicted_count': int(predicted_cat.sum()),
+            'actual_count': int(actual_cat.sum())
+        }
+
+    return {
+        'accuracy': round(accuracy, 2),
+        'correct': int(correct),
+        'total': total,
+        'per_category': per_cat
+    }
+
+
 def run_triage(complaints_df=None, api_key=None):
     """
     Main entry point.
