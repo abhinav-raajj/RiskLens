@@ -47,15 +47,16 @@ print(upi_df.to_string(index=False))
 conn.close()
 print(f"  -> SQL queries done in {time.time()-t0:.1f}s")
 
-# step 4: risk scoring (only first weight combo to save time)
+# step 4: risk scoring with weight tuning
 print("\n[4/6] Computing user baselines and scoring transactions...")
 t0 = time.time()
-from src.risk_engine import compute_user_baselines, score_transactions, evaluate_scoring
+from src.risk_engine import (compute_user_baselines, score_transactions,
+                              tune_weights, evaluate_scoring, compare_all_approaches)
 baselines = compute_user_baselines(df)
 print(f"  -> Baselines computed for {len(baselines)} users in {time.time()-t0:.1f}s")
 
 t0 = time.time()
-scored_df = score_transactions(df, baselines)
+best_weights, scored_df = tune_weights(df, baselines)
 print(f"  -> Scoring done in {time.time()-t0:.1f}s")
 print(f"  -> Risk distribution:")
 print(scored_df['risk_bucket'].value_counts().to_string())
@@ -66,7 +67,8 @@ eval_results = evaluate_scoring(scored_df)
 print("\n[5/6] Running threshold simulator...")
 from src.threshold_simulator import precompute_all_thresholds, compute_cost_tradeoff
 thresh_df = precompute_all_thresholds(scored_df)
-thresh_df = compute_cost_tradeoff(thresh_df)
+thresh_df = compute_cost_tradeoff(thresh_df, incident_cost_multiplier=3.0)
+print("(Using 3x incident cost multiplier — includes chargeback fees, card replacement)")
 print(thresh_df[['threshold', 'flagged_count', 'true_positives', 'false_positives', 'precision', 'recall', 'tp_amount', 'review_cost', 'net_benefit']].to_string(index=False))
 
 # step 6: drift detection

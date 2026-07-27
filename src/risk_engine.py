@@ -238,3 +238,124 @@ def tune_weights(df, baselines):
     print(f"Best weights: {best_weights}")
 
     return best_weights, best_scored_df
+
+
+# ============================================================
+# LOGISTIC REGRESSION — fitted weights instead of guessed ones
+# ============================================================
+
+SIGNAL_COLUMNS = ['amount_deviation', 'category_rarity', 'time_anomaly',
+                  'velocity', 'round_number_pattern']
+
+
+def fit_logistic_model(scored_df, features=None):
+    """Fit LR on interpretable signals — data-fitted weights, still explainable."""
+    from sklearn.linear_model import LogisticRegression
+    if features is None:
+        features = SIGNAL_COLUMNS
+    X = scored_df[features].values
+    y = scored_df['Class'].values
+    model = LogisticRegression(class_weight='balanced', max_iter=1000, random_state=42)
+    model.fit(X, y)
+    coefficients = {}
+    for feat, coef in zip(features, model.coef_[0]):
+        coefficients[feat] = {'coefficient': round(coef, 4), 'odds_ratio': round(np.exp(coef), 2)}
+    coefficients['intercept'] = round(model.intercept_[0], 4)
+    probs = model.predict_proba(X)[:, 1]
+    result_df = scored_df.copy()
+    result_df['fraud_probability'] = probs
+    return model, coefficients, result_df
+
+
+def evaluate_logistic_model(scored_df, prob_column='fraud_probability'):
+    """Evaluate LR at several probability thresholds."""
+    total_fraud = scored_df['Class'].sum()
+    total = len(scored_df)
+    results = []
+    for t in [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5]:
+        flagged = scored_df[prob_column] >= t
+        tp = (flagged & (scored_df['Class'] == 1)).sum()
+        fp = (flagged & (scored_df['Class'] == 0)).sum()
+        tp_amount = scored_df.loc[flagged & (scored_df['Class'] == 1), 'Amount'].sum()
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        recall = tp / total_fraud if total_fraud > 0 else 0
+        results.append({
+            'prob_threshold': t, 'flagged': int(flagged.sum()),
+            'flagged_pct': round(flagged.sum() / total * 100, 2),
+            'true_positives': int(tp), 'false_positives': int(fp),
+            'precision': round(precision, 4), 'recall': round(recall, 4),
+            'tp_amount': round(tp_amount, 2)
+        })
+    return pd.DataFrame(results)
+
+
+def compare_all_approaches(scored_df):
+    """Side-by-side: hand-weighted vs LR (5 signals) vs LR+PCA."""
+    comparison = {}
+    total_fraud = scored_df['Class'].sum()
+
+    # Approach 1: Hand-weighted rules
+    hand_metrics = []
+    for threshold in [1, 2, 3, 4, 5]:
+        flagged = scored_df['risk_score'] >= threshold
+        tp = (flagged & (scored_df['Class'] == 1)).sum()
+        fp = (flagged & (scored_df['Class'] == 0)).sum()
+        tp_amt = scored_df.loc[flagged & (scored_df['Class'] == 1), 'Amount'].sum()
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0
+        rec = tp / total_fraud if total_fraud > 0 else 0
+        hand_metrics.append({
+            'threshold': f'score>={threshold}', 'flagged': int(flagged.sum()),
+            'flagged_pct': round(flagged.sum() / len(scored_df) * 100, 2),
+            'true_positives': int(tp), 'precision': round(prec, 4),
+            'recall': round(rec, 4), 'tp_amount': round(tp_amt, 2)
+        })
+    comparison['hand_weighted'] = {
+        'metrics': pd.DataFrame(hand_metrics), 'label': 'Hand-Weighted Rules'
+    }
+
+    # Approach 2: LR on 5 interpretable signals
+    print("\nFitting LR on 5 interpretable signals...")
+    model_5, coefs_5, df_5 = fit_logistic_model(scored_df)
+    lr5_metrics = evaluate_logistic_model(df_5)
+    comparison['lr_interpretable'] = {
+        'model': model_5, 'coefficients': coefs_5, 'metrics': lr5_metrics,
+        'scored_df': df_5, 'features': list(SIGNAL_COLUMNS),
+        'label': 'LR (5 Interpretable Signals)'
+    }
+    print("  Learned coefficients:")
+    for feat, vals in coefs_5.items():
+        if feat != 'intercept':
+            print(f"    {feat:25s} coef={vals['coefficient']:+.4f}  odds={vals['odds_ratio']:.2f}x")
+
+    # Approach 3: LR + top PCA features
+    pca_cols = ['V14', 'V17', 'V12', 'V10']
+    boosted = SIGNAL_COLUMNS + pca_cols
+    print(f"\nFitting LR on 5 signals + PCA {pca_cols}...")
+    model_b, coefs_b, df_b = fit_logistic_model(scored_df, features=boosted)
+    lrb_metrics = evaluate_logistic_model(df_b)
+    comparison['lr_boosted'] = {
+        'model': model_b, 'coefficients': coefs_b, 'metrics': lrb_metrics,
+        'scored_df': df_b, 'features': list(boosted),
+        'label': 'LR (5 Signals + PCA)'
+    }
+    print("  Coefficients:")
+    for feat, vals in coefs_b.items():
+        if feat != 'intercept':
+            tag = " (PCA)" if feat in pca_cols else ""
+            print(f"    {feat:25s} coef={vals['coefficient']:+.4f}  odds={vals['odds_ratio']:.2f}x{tag}")
+
+    # Summary
+    print("\n" + "=" * 70)
+    print("COMPARISON AT ~1% FLAG RATE")
+    print("=" * 70)
+    for name, data in comparison.items():
+        df_m = data['metrics']
+        if 'flagged_pct' in df_m.columns:
+            idx = (df_m['flagged_pct'] - 1.0).abs().idxmin()
+        else:
+            idx = len(df_m) // 2
+        best = df_m.iloc[idx]
+        print(f"  {data['label']:30s}: prec={best['precision']:.4f}  "
+              f"recall={best['recall']:.4f}  flagged={int(best['flagged']):,}")
+
+    return comparison
