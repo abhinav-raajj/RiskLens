@@ -107,9 +107,8 @@ def load_and_process():
     eval_metrics = evaluate_scoring(scored_df)
     results['eval_metrics'] = eval_metrics
 
-    # step 5 — precompute threshold tradeoff data for the slider
+    # step 5 — precompute threshold metrics (cost tradeoff computed later with slider value)
     threshold_df = precompute_all_thresholds(scored_df, max_threshold=10)
-    threshold_df = compute_cost_tradeoff(threshold_df)
     results['threshold_data'] = threshold_df
 
     # step 6 — compute risk trajectory and drift
@@ -157,9 +156,21 @@ st.sidebar.markdown("**Risk Engine Controls**")
 
 selected_threshold = st.sidebar.slider(
     "Risk Score Cutoff",
-    min_value=0, max_value=9, value=3, step=1,
+    min_value=0, max_value=9, value=4, step=1,
     help="Transactions with risk score >= this value get flagged for review"
 )
+
+incident_multiplier = st.sidebar.slider(
+    "Incident Cost Multiplier",
+    min_value=1.0, max_value=10.0, value=3.0, step=0.5,
+    help="Total cost of a fraud incident as a multiple of the transaction amount. "
+         "1x = just the transaction amount. 3-5x = includes chargeback fees, "
+         "card replacement, account remediation, regulatory reporting."
+)
+
+st.sidebar.caption("_1x = transaction amount only. "
+                   "3x = conservative industry estimate. "
+                   "5x = includes brand/trust damage._")
 
 st.sidebar.markdown("---")
 api_key = st.sidebar.text_input(
@@ -199,7 +210,9 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # ============================================================
 with tab1:
     try:
-        td = data['threshold_data']
+        # recompute cost tradeoff with the current multiplier from sidebar
+        td = compute_cost_tradeoff(data['threshold_data'],
+                                   incident_cost_multiplier=incident_multiplier)
         curr = td[td['threshold'] == selected_threshold]
         if curr.empty:
             st.warning("No data for selected threshold.")
@@ -243,15 +256,15 @@ with tab1:
                 net = curr['net_benefit']
                 fig2 = go.Figure(data=[
                     go.Bar(
-                        name='Fraud Loss Prevented ($)',
+                        name='Fraud $ Prevented (actual amounts)',
                         x=['Financial Impact'],
                         y=[curr['fraud_loss_prevented']],
                         marker_color=COLORS['success']
                     ),
                     go.Bar(
-                        name='Customer Friction Cost ($)',
+                        name='Review Cost ($15/flagged txn)',
                         x=['Financial Impact'],
-                        y=[curr['friction_cost']],
+                        y=[curr['review_cost']],
                         marker_color=COLORS['danger']
                     ),
                 ])
@@ -272,14 +285,26 @@ with tab1:
             m4.metric("Precision", f"{curr['precision']:.2%}")
             m5.metric("Recall", f"{curr['recall']:.2%}")
 
+            # financial detail
+            st.markdown("### Financial Impact")
+            f1, f2, f3 = st.columns(3)
+            f1.metric("Fraud $ Prevented", f"${curr['fraud_loss_prevented']:,.0f}",
+                      help="Sum of actual fraud transaction amounts caught — from the data, not an assumption")
+            f2.metric("Review Cost", f"${curr['review_cost']:,.0f}",
+                      help="Assumption: $15 per flagged transaction for analyst review time (~10 min at $90/hr loaded cost)")
+            f3.metric("Net Benefit", f"${net:,.0f}",
+                      delta="Profitable" if net > 0 else "Unprofitable",
+                      delta_color="normal" if net > 0 else "inverse")
+
             # insight callout
             pct_flagged = curr['pct_flagged'] * 100
             recall_pct = curr['recall'] * 100
             net_label = f"${abs(net):,.0f} {'saved' if net >= 0 else 'lost'}"
             st.info(
                 f"💡 **At threshold {selected_threshold}:** you flag **{pct_flagged:.1f}%** of all transactions, "
-                f"catch **{recall_pct:.1f}%** of actual fraud, and the net financial impact is **{net_label}**. "
-                f"{'Consider raising the threshold to reduce false positives.' if curr['false_positive_rate'] > 0.01 else 'This threshold balances fraud capture with customer experience well.'}"
+                f"catch **{recall_pct:.1f}%** of actual fraud (${curr['fraud_loss_prevented']:,.0f} in real fraud amounts), "
+                f"and the net impact is **{net_label}** after review costs. "
+                f"*(Review cost assumes $15/flagged transaction for analyst time.)*"
             )
 
     except Exception as e:

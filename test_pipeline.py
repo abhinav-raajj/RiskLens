@@ -67,7 +67,7 @@ print("\n[5/6] Running threshold simulator...")
 from src.threshold_simulator import precompute_all_thresholds, compute_cost_tradeoff
 thresh_df = precompute_all_thresholds(scored_df)
 thresh_df = compute_cost_tradeoff(thresh_df)
-print(thresh_df[['threshold', 'flagged_count', 'true_positives', 'false_positives', 'precision', 'recall', 'net_benefit']].to_string(index=False))
+print(thresh_df[['threshold', 'flagged_count', 'true_positives', 'false_positives', 'precision', 'recall', 'tp_amount', 'review_cost', 'net_benefit']].to_string(index=False))
 
 # step 6: drift detection
 print("\n[6/6] Computing risk trajectories...")
