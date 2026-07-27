@@ -248,18 +248,63 @@ SIGNAL_COLUMNS = ['amount_deviation', 'category_rarity', 'time_anomaly',
                   'velocity', 'round_number_pattern']
 
 
+def _compute_signal_frequency(scored_df, features=None):
+    """
+    Stable alternative to odds ratios: for each signal, compute
+    what % of fraud vs legit transactions trigger it.
+    This sidesteps quasi-complete-separation issues entirely.
+    """
+    if features is None:
+        features = SIGNAL_COLUMNS
+    fraud = scored_df[scored_df['Class'] == 1]
+    legit = scored_df[scored_df['Class'] == 0]
+    rows = []
+    for feat in features:
+        # what fraction of fraud/legit transactions have this flag = 1?
+        fraud_rate = fraud[feat].mean() if len(fraud) > 0 else 0
+        legit_rate = legit[feat].mean() if len(legit) > 0 else 0
+        # how much more common is this flag in fraud vs legit?
+        lift = round(fraud_rate / legit_rate, 1) if legit_rate > 0 else float('inf')
+        rows.append({
+            'signal': feat,
+            'pct_fraud_flagged': round(fraud_rate * 100, 1),
+            'pct_legit_flagged': round(legit_rate * 100, 1),
+            'lift': lift
+        })
+    return pd.DataFrame(rows)
+
+
 def fit_logistic_model(scored_df, features=None):
-    """Fit LR on interpretable signals — data-fitted weights, still explainable."""
+    """
+    Fit LR on interpretable signals — data-fitted weights, still explainable.
+
+    Uses strong regularization (C=0.001) because category_rarity (V14 < -5)
+    causes quasi-complete separation — without it, LR pushes that coefficient
+    toward infinity, producing misleading 2000x+ odds ratios. With regularization,
+    we get stable, reproducible coefficients that reflect *relative* importance
+    across features rather than an inflated artifact of near-perfect separation.
+    """
     from sklearn.linear_model import LogisticRegression
     if features is None:
         features = SIGNAL_COLUMNS
     X = scored_df[features].values
     y = scored_df['Class'].values
-    model = LogisticRegression(class_weight='balanced', max_iter=1000, random_state=42)
+    model = LogisticRegression(C=0.001, class_weight='balanced', max_iter=1000,
+                                random_state=42)
     model.fit(X, y)
+
+    # compute relative importance: normalize absolute coefficients to sum to 100%
+    abs_coefs = np.abs(model.coef_[0])
+    total = abs_coefs.sum()
+    rel_importance = abs_coefs / total * 100 if total > 0 else abs_coefs
+
     coefficients = {}
-    for feat, coef in zip(features, model.coef_[0]):
-        coefficients[feat] = {'coefficient': round(coef, 4), 'odds_ratio': round(np.exp(coef), 2)}
+    for feat, coef, imp in zip(features, model.coef_[0], rel_importance):
+        coefficients[feat] = {
+            'coefficient': round(coef, 4),
+            'relative_importance_pct': round(imp, 1),
+            'direction': 'increases fraud risk' if coef > 0 else 'decreases fraud risk'
+        }
     coefficients['intercept'] = round(model.intercept_[0], 4)
     probs = model.predict_proba(X)[:, 1]
     result_df = scored_df.copy()
@@ -313,6 +358,15 @@ def compare_all_approaches(scored_df):
         'metrics': pd.DataFrame(hand_metrics), 'label': 'Hand-Weighted Rules'
     }
 
+    # --- Signal Frequency Analysis (stable, interview-safe) ---
+    print("\n--- Signal Frequency Analysis ---")
+    print("  (What % of fraud vs legit transactions trigger each signal)")
+    freq_df = _compute_signal_frequency(scored_df)
+    for _, row in freq_df.iterrows():
+        print(f"    {row['signal']:25s}  fraud={row['pct_fraud_flagged']:5.1f}%  "
+              f"legit={row['pct_legit_flagged']:5.1f}%  lift={row['lift']:.1f}x")
+    comparison['signal_frequency'] = freq_df
+
     # Approach 2: LR on 5 interpretable signals
     print("\nFitting LR on 5 interpretable signals...")
     model_5, coefs_5, df_5 = fit_logistic_model(scored_df)
@@ -322,10 +376,15 @@ def compare_all_approaches(scored_df):
         'scored_df': df_5, 'features': list(SIGNAL_COLUMNS),
         'label': 'LR (5 Interpretable Signals)'
     }
-    print("  Learned coefficients:")
-    for feat, vals in coefs_5.items():
-        if feat != 'intercept':
-            print(f"    {feat:25s} coef={vals['coefficient']:+.4f}  odds={vals['odds_ratio']:.2f}x")
+    print("  Feature importance (relative contribution to model):")
+    # sort by importance descending
+    sorted_feats = sorted(
+        [(f, v) for f, v in coefs_5.items() if f != 'intercept'],
+        key=lambda x: x[1]['relative_importance_pct'], reverse=True
+    )
+    for rank, (feat, vals) in enumerate(sorted_feats, 1):
+        print(f"    #{rank}  {feat:25s}  {vals['relative_importance_pct']:5.1f}%  "
+              f"({vals['direction']})")
 
     # Approach 3: LR + top PCA features
     pca_cols = ['V14', 'V17', 'V12', 'V10']
@@ -338,17 +397,23 @@ def compare_all_approaches(scored_df):
         'scored_df': df_b, 'features': list(boosted),
         'label': 'LR (5 Signals + PCA)'
     }
-    print("  Coefficients:")
-    for feat, vals in coefs_b.items():
-        if feat != 'intercept':
-            tag = " (PCA)" if feat in pca_cols else ""
-            print(f"    {feat:25s} coef={vals['coefficient']:+.4f}  odds={vals['odds_ratio']:.2f}x{tag}")
+    print("  Feature importance (relative contribution to model):")
+    sorted_b = sorted(
+        [(f, v) for f, v in coefs_b.items() if f != 'intercept'],
+        key=lambda x: x[1]['relative_importance_pct'], reverse=True
+    )
+    for rank, (feat, vals) in enumerate(sorted_b, 1):
+        tag = " [PCA]" if feat in pca_cols else ""
+        print(f"    #{rank}  {feat:25s}  {vals['relative_importance_pct']:5.1f}%  "
+              f"({vals['direction']}){tag}")
 
-    # Summary
+    # Summary comparison at ~1% flag rate
     print("\n" + "=" * 70)
     print("COMPARISON AT ~1% FLAG RATE")
     print("=" * 70)
     for name, data in comparison.items():
+        if name == 'signal_frequency':
+            continue
         df_m = data['metrics']
         if 'flagged_pct' in df_m.columns:
             idx = (df_m['flagged_pct'] - 1.0).abs().idxmin()

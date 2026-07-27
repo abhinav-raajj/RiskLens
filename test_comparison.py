@@ -23,5 +23,8 @@ comparison = compare_all_approaches(scored_df)
 
 # print detailed metrics for each approach
 for name, data in comparison.items():
+    if not isinstance(data, dict) or 'label' not in data:
+        continue
     print(f"\n--- {data['label']} ---")
     print(data['metrics'].to_string(index=False))
+
