@@ -63,7 +63,7 @@ streamlit run app.py
 risklens/
 ├── README.md
 ├── product_writeup.md         # one-page product analysis
-├── resume_bullets.md          # resume-ready bullet points
+
 ├── requirements.txt
 ├── app.py                     # Streamlit dashboard
 ├── test_pipeline.py           # end-to-end smoke test
